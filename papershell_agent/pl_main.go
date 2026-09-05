@@ -281,6 +281,7 @@ func (p *PluginAgent) BuildPayload(profile adaptix.BuildProfile, agentProfiles [
 	agentContent = strings.ReplaceAll(agentContent, "<CALLBACK_HOST>", callbackHost)
 	agentContent = strings.ReplaceAll(agentContent, "<CALLBACK_PORT>", callbackPort)
 	agentContent = strings.ReplaceAll(agentContent, "<WATERMARK>", AgentWatermark)
+	agentContent = strings.ReplaceAll(agentContent, "<ENCRYPT_KEY>", generateConfig.EncryptKey)
 
 	Payload = []byte(agentContent)
 
@@ -290,20 +291,21 @@ func (p *PluginAgent) BuildPayload(profile adaptix.BuildProfile, agentProfiles [
 }
 
 type InitialData struct {
-	Domain			string	`json:"domain"`
-	Username		string	`json:"username"`
-	Computer		string	`json:"computer"`
-	InternalIP		string	`json:"internal_ip"`
-	ACP				int		`json:"acp"`
-	OemCP			int		`json:"oemcp"`
-	GmtOffset		int		`json:"gmt_offset"`
-	Pid				int		`json:"pid"`
-	Tid				int		`json:"tid"`
+	Domain			string		`json:"domain"`
+	Username		string		`json:"username"`
+	Computer		string		`json:"computer"`
+	InternalIP		string		`json:"internal_ip"`
+	ACP				int			`json:"acp"`
+	OemCP			int			`json:"oemcp"`
+	GmtOffset		int			`json:"gmt_offset"`
+	Pid				int			`json:"pid"`
+	Tid				int			`json:"tid"`
 	BuildNumber		uint		`json:"build_number"`
 	MajorVersion	uint8		`json:"major_version"`
 	MinorVersion	uint8		`json:"minor_version"`
-	Flag			int		`json:"flag"`
-	ProcessName		string	`json:"process_name"`
+	Flag			int			`json:"flag"`
+	ProcessName		string		`json:"process_name"`
+	SessionKey		[]byte		`json:"session_key"`
 }
 
 // CreateAgent parses initial beacon data and populates agent metadata.
@@ -326,6 +328,7 @@ func (p *PluginAgent) CreateAgent(beat []byte) (adaptix.AgentData, adaptix.Exten
 	agentData.Pid			= strconv.Itoa(parsedData.Pid)
 	agentData.Tid			= strconv.Itoa(parsedData.Tid)
 	agentData.Process 		= parsedData.ProcessName
+	agentData.SessionKey	= parsedData.SessionKey
 
 	agentData.Arch = "x32"
 	if (parsedData.Flag & 0b00000001) > 0 {

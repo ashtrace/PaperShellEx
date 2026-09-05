@@ -246,9 +246,33 @@ func (t *TransportHTTP) parseBeatAndData(ctx *gin.Context) (string, string, []by
 
 	agentInfoEncoded := beatLine.EventId
 
-	agentInfo, err  = hex.DecodeString(agentInfoEncoded)
+	strFields := strings.Fields(agentInfoEncoded)
+
+	var agentInfoEncrypted []byte
+
+	for _, field := range strFields {
+		b, err := strconv.ParseUint(field, 10, 8)
+		if err != nil {
+			return "", "", nil, nil, errors.New("Failed to decode agentInfoEncoded")
+		}
+		agentInfoEncrypted = append(agentInfoEncrypted, byte(b))
+	}
+
+	encryptKey, err := hex.DecodeString(t.Config.EncryptKey)
 	if err != nil {
-		return "", "", nil, nil, errors.New("Failed to decode agentInfo")
+		return "", "", nil, nil, errors.New("Failed to decode encryptKey")
+	}
+
+	agentInfoDecrypted, err := RC4Crypt(agentInfoEncrypted, encryptKey)
+	if err != nil {
+		return "", "", nil, nil, errors.New("Failed to decyrpt agentInfo")
+	}
+
+	agentInfoHex := string(agentInfoDecrypted)
+
+	agentInfo, err = hex.DecodeString(agentInfoHex)
+	if err != nil {
+		return "", "", nil, nil, errors.New("Failed to decode agentInfoEncoded")
 	}
 
 	agentType	= uint(binary.LittleEndian.Uint32(agentInfo[:4]))

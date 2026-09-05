@@ -249,7 +249,6 @@ func (ext *ExtenderAgent) ProcessData(agentData adaptix.AgentData, decryptedData
 
 	err := json.Unmarshal(decryptedData, &resultData)
 	if err != nil {
-		fmt.Printf("err: %v\n", err)
 		goto HANDLER
 	}
 
@@ -324,14 +323,15 @@ HANDLER:
 
 func (ext *ExtenderAgent) Encrypt(data []byte, key []byte) ([]byte, error) {
 	/// START CODE
-	return data, nil
-	// return RC4Crypt(data, key)
+	// return data, nil
+	return RC4Crypt(data, key)
 	/// END CODE
 }
 
 func (ext *ExtenderAgent) Decrypt(data []byte, key []byte) ([]byte, error) {
 	/// START CODE
-	return data, nil
+	// return data, nil
+	return RC4Crypt(data, key)
 	/// END CODE
 }
 
