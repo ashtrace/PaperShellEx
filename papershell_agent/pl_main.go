@@ -162,6 +162,7 @@ type GenerateConfig struct {
 	PortBind		int		`json:"port_bind"`
 	CallbackAddress	string	`json:"callback_address"`
 	EncryptKey		string	`json:"encrypt_key"`
+	Ssl				bool	`json:"ssl,omitempty"`
 }
 
 // GenerateProfiles extracts listener configuration needed for agent generation.
@@ -202,6 +203,7 @@ func (p *PluginAgent) GenerateProfiles(profile adaptix.BuildProfile) ([][]byte, 
 		params = append(params, int(agentWatermark))
 		params = append(params, int(lWatermark))
 		params = append(params, generateConfig.CallbackAddress)
+		params = append(params, generateConfig.Ssl)
 
 		packedParams, err := PackArray(params)
 		if err != nil {
@@ -282,6 +284,13 @@ func (p *PluginAgent) BuildPayload(profile adaptix.BuildProfile, agentProfiles [
 	agentContent = strings.ReplaceAll(agentContent, "<CALLBACK_PORT>", callbackPort)
 	agentContent = strings.ReplaceAll(agentContent, "<WATERMARK>", AgentWatermark)
 	agentContent = strings.ReplaceAll(agentContent, "<ENCRYPT_KEY>", generateConfig.EncryptKey)
+
+	if (generateConfig.Ssl) {
+		agentContent = strings.ReplaceAll(agentContent, "<CALLBACK_PROTOCOL>", "https")
+		agentContent = strings.Replace(agentContent, "$skipSslVerification = $false", "$skipSslVerification = $true", 1)
+	} else {
+		agentContent = strings.ReplaceAll(agentContent, "<CALLBACK_PROTOCOL>", "http")
+	}
 
 	Payload = []byte(agentContent)
 

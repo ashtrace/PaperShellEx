@@ -140,6 +140,7 @@ func (p *PluginListener) Create(name string, config string, customData []byte) (
 		if err != nil {
 			return nil, listenerData, customdData, err
 		}
+		conf.Protocol = "http"
 	// Else parse the `config`
 	} else {
 		err = json.Unmarshal(customData, &conf)
@@ -160,6 +161,10 @@ func (p *PluginListener) Create(name string, config string, customData []byte) (
 		BindPort:	strconv.Itoa(transport.Config.PortBind),
 		AgentAddr:	transport.Config.CallbackAddress,
 		Status:		"Stopped",
+	}
+
+	if transport.Config.Ssl {
+		listenerData.Protocol = "https"
 	}
 
 	var buffer bytes.Buffer

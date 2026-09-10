@@ -3,14 +3,21 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"net"
 	"net/http"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -24,6 +31,14 @@ type TransportConfig struct {
 	PortBind        int    `json:"port_bind"`
 	CallbackAddress string `json:"callback_address"`
 	EncryptKey		string `json:"encrypt_key"`
+
+	Ssl				bool	`json:"ssl"`
+	SslCert			[]byte	`json:"ssl_cert"`
+	SslKey			[]byte	`json:"ssl_key"`
+	SslCertPath		string	`json:"ssl_cert_path"`
+	SslKeyPath		string	`json:"ssl_key_path"`
+
+	Protocol		string	`json:"protocol"`
 }
 
 type TransportHTTP struct {
@@ -62,7 +77,7 @@ func validConfig(config string) error {
 
 	host, portStr, err := net.SplitHostPort(conf.CallbackAddress)
 	if err != nil {
-		return fmt.Errorf("nvalid address (cannot split host:port): %s\n", conf.CallbackAddress)
+		return fmt.Errorf("Invalid address (cannot split host:port): %s\n", conf.CallbackAddress)
 	}
 
 	port, err := strconv.Atoi(portStr)
@@ -110,7 +125,74 @@ func (t *TransportHTTP) Start(ts Teamserver) error {
 		Handler: router,
 	}
 
-	fmt.Printf("   Started listener: http://%s:%d\n", t.Config.HostBind, t.Config.PortBind)
+	if t.Config.Ssl {
+		fmt.Printf("   Started listener '%s': https://%s:%d\n", t.Name, t.Config.HostBind, t.Config.PortBind)
+
+		listenerPath := ListenerDataDir + "/" + t.Name
+		_, err = os.Stat(listenerPath)
+		if os.IsNotExist(err) {
+			err = os.Mkdir(listenerPath, os.ModePerm)
+			if err != nil {
+				return fmt.Errorf("failed to create %s folder: %s", listenerPath, err.Error())
+			}
+		}
+
+		t.Config.SslCertPath	= listenerPath + "/listener.crt"
+		t.Config.SslKeyPath		= listenerPath + "/listener.key"
+
+		if len(t.Config.SslCert) == 0 || len(t.Config.SslKey) == 0 {
+			err = t.generateSelfSignedCert(t.Config.SslCertPath, t.Config.SslKeyPath)
+			if err != nil {
+				t.Active = false
+				fmt.Println("Error generating self-signed certificate: ", err);
+				return err
+			}
+		} else {
+			err = os.WriteFile(t.Config.SslCertPath, t.Config.SslCert, 0600)
+			if err != nil {
+				return err
+			}
+			err = os.WriteFile(t.Config.SslKeyPath, t.Config.SslKey, 0600)
+			if err != nil {
+				return err
+			}
+		}
+
+		cert, err := tls.LoadX509KeyPair(t.Config.SslCertPath, t.Config.SslKeyPath)
+		if err != nil {
+			t.Active = false
+			return fmt.Errorf("failed to load certificate: %v", err)
+		}
+
+		t.Server.TLSConfig = &tls.Config{
+			Certificates:	[]tls.Certificate{cert},
+			MinVersion:		tls.VersionTLS10,
+			MaxVersion:		tls.VersionTLS13,
+			CipherSuites:	[]uint16{
+				tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+				tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+				tls.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256,
+				tls.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
+				tls.TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA,
+				tls.TLS_RSA_WITH_AES_128_GCM_SHA256,
+				tls.TLS_RSA_WITH_AES_256_GCM_SHA384,
+				tls.TLS_RSA_WITH_AES_128_CBC_SHA256,
+				tls.TLS_RSA_WITH_AES_128_CBC_SHA,
+				tls.TLS_RSA_WITH_AES_256_CBC_SHA,
+			},
+		}
+
+		go func() {
+			err = t.Server.ListenAndServeTLS("", "")
+			if err != nil && !errors.Is(err, http.ErrServerClosed) {
+				fmt.Printf("Error starting HTTPS server: %v\n", err)
+				return
+			}
+			t.Active = true
+		}()
+	
+	} else {
+	fmt.Printf("   Started listener '%s': http://%s:%d\n", t.Name, t.Config.HostBind, t.Config.PortBind)
 
 	// Start HTTP server in a separate goroutine
 	go func() {
@@ -121,6 +203,7 @@ func (t *TransportHTTP) Start(ts Teamserver) error {
 		}
 		t.Active = true
 	}()
+	}
 
 	// Wait for the server to come up
 	time.Sleep(500 * time.Millisecond)
@@ -129,13 +212,22 @@ func (t *TransportHTTP) Start(ts Teamserver) error {
 
 func (t *TransportHTTP) Stop() error {
 	var (
-		ctx    context.Context
-		cancel context.CancelFunc
-		err    error = nil
+		ctx    			context.Context
+		cancel 			context.CancelFunc
+		err    			error	= nil
+		listenerPath			= ListenerDataDir + "/" + t.Name
 	)
 
 	ctx, cancel = context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
+
+	_, err = os.Stat(listenerPath)
+	if err == nil {
+		err = os.RemoveAll(listenerPath)
+		if err != nil {
+			return fmt.Errorf("failed to remove %s folder: %s", listenerPath, err.Error())
+		}
+	}
 
 	err = t.Server.Shutdown(ctx)
 	return err
@@ -300,3 +392,74 @@ func (t *TransportHTTP) parseBeatAndData(ctx *gin.Context) (string, string, []by
 
 	return fmt.Sprintf("%08x", agentType), fmt.Sprintf("%08x", agentId), agentInfo, agentData, nil
 } 
+
+func (t *TransportHTTP) generateSelfSignedCert(certFile, keyFile string) error {
+	var (
+		certData		[]byte
+		keyData			[]byte
+		certBuffer		bytes.Buffer
+		keyBuffer		bytes.Buffer
+		privateKey		*rsa.PrivateKey
+		err				error
+	)
+
+	privateKey, err = rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return fmt.Errorf("failed to generate private key: %v", err)
+	}
+
+	serialNumberLimit	:= new(big.Int).Lsh(big.NewInt(1), 128)
+	serialNumber, err	:= rand.Int(rand.Reader, serialNumberLimit)
+	if err != nil {
+		return fmt.Errorf("failed to generate serial number: %v", err)
+	}
+
+	template := x509.Certificate{
+		SerialNumber:			serialNumber,
+		NotBefore:				time.Now(),
+		NotAfter:				time.Now().Add(365 * 24 * time.Hour),
+		KeyUsage:				x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:			[]x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid:	true,
+	}
+
+	hostBind := strings.TrimSpace(t.Config.HostBind)
+	if hostBind == "" || hostBind == "0.0.0.0" || hostBind == "::" {
+		template.DNSNames		= []string{"localhost"}
+		template.IPAddresses	= []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1")}
+	} else if ip := net.ParseIP(hostBind); ip != nil {
+		template.IPAddresses	= []net.IP{ip}
+	} else {
+		template.DNSNames		= []string{hostBind}
+	}
+
+	certData, err = x509.CreateCertificate(rand.Reader, &template, &template, &privateKey.PublicKey, privateKey)
+	if err != nil {
+		return fmt.Errorf("failed to create certificate: %v", err)
+	}
+
+	err = pem.Encode(&certBuffer, &pem.Block{Type: "CERTIFICATE", Bytes: certData})
+	if err != nil {
+		return fmt.Errorf("failed to write certificate: %v", err)
+	}
+
+	t.Config.SslCert = certBuffer.Bytes()
+	err = os.WriteFile(certFile, t.Config.SslCert, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to create certificate file: %v", err)
+	}
+
+	keyData = x509.MarshalPKCS1PrivateKey(privateKey)
+	err = pem.Encode(&keyBuffer, &pem.Block{Type: "RSA PRIVATE KEY", Bytes: keyData})
+	if err != nil {
+		return fmt.Errorf("failed to write private key: %v", err)
+	}
+
+	t.Config.SslKey = keyBuffer.Bytes()
+	err = os.WriteFile(keyFile, t.Config.SslKey, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to create key file: %v", err)
+	}
+
+	return nil
+}
