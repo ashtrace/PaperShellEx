@@ -9,7 +9,7 @@ It includes the commands of `cat`, `cd`, `ls`, and `run` from original PaperShel
 Further implemented
 - [x] beat encryption
 - [x] payload encryption
-- [ ] HTTPS
+- [x] HTTPS
 
 Installation:
 
