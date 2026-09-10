@@ -6,7 +6,10 @@ Based upon [ArturLukianov's](https://github.com/ArturLukianov/PaperShell) origin
 
 It includes the commands of `cat`, `cd`, `ls`, and `run` from original PaperShell.
 
-This version does not contain payload encryption or HTTPS (Though I might experiment with them later).
+Further implemented
+- [x] beat encryption
+- [x] payload encryption
+- [ ] HTTPS
 
 Installation:
 
